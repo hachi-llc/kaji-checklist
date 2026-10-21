@@ -90,7 +90,7 @@ function applyConfig(c) {
 }
 const DEMO = new URLSearchParams(location.search).has('demo');
 
-let state = { me: null, day: null, date: null, busy: false };
+let state = { me: null, day: null, date: null, config: null, ready: false };
 const app = document.getElementById('app');
 
 function toast(msg) {
@@ -130,7 +130,9 @@ function renderRegister(taken) {
     try {
       const j = await api('register', { name: b.dataset.name });
       applyConfig(j.config);
+      state.config = j.config;
       state.me = j.me;
+      state.ready = true;
       load(state.date);
     } catch (e) { toast(e.message); }
   });
@@ -219,6 +221,7 @@ function flipLocal(id) {
 }
 
 async function toggle(li) {
+  if (!state.ready) { toast('最新の状態を読み込み中です。少し待ってからタップしてください'); return; }
   const id = li.dataset.id;
   const date = state.day.date;
   flipLocal(id);
@@ -227,7 +230,7 @@ async function toggle(li) {
   try {
     const j = await api('toggle', { date: date, taskId: id });
     inflight--;
-    if (inflight === 0 && state.day.date === date) { state.day = j.day; render(); }
+    if (inflight === 0 && state.day.date === date) { state.day = j.day; render(); saveCache(); }
   } catch (e) {
     inflight--;
     if (state.day.date === date) { flipLocal(id); render(); }
@@ -240,6 +243,7 @@ async function load(date) {
     const j = await api('day', date ? { date: date } : {});
     state.day = j.day; state.date = j.day.date; state.me = j.me;
     render();
+    saveCache();
     window.scrollTo(0, 0);
   } catch (e) { toast(e.message); }
 }
@@ -252,8 +256,25 @@ function loadScript(url) {
   });
 }
 
+// 前回開いたときの画面をこのスマホに覚えておき、次回はまずそれを即表示する
+const CACHE_KEY = 'kaji_last';
+function saveCache() {
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify({ config: state.config, me: state.me, day: state.day })); } catch (e) {}
+}
+function showCache() {
+  try {
+    const c = JSON.parse(localStorage.getItem(CACHE_KEY) || 'null');
+    const n = new Date();
+    const today = n.getFullYear() + '-' + String(n.getMonth() + 1).padStart(2, '0') + '-' + String(n.getDate()).padStart(2, '0');
+    if (!c || !c.day || c.day.date !== today) return;
+    applyConfig(c.config); state.config = c.config; state.me = c.me; state.day = c.day; state.date = c.day.date;
+    render();
+  } catch (e) {}
+}
+
 async function main() {
   try {
+    if (!DEMO) showCache();
     if (!DEMO) {
       await liff.init({ liffId: LIFF_ID });
       if (!liff.isLoggedIn()) { liff.login(); return; }
@@ -261,13 +282,32 @@ async function main() {
     if (DEMO) await loadScript('demo.js');
     const who = await api('whoami');
     applyConfig(who.config);
+    state.config = who.config;
     if (!who.me) { renderRegister(who.taken); return; }
     state.me = who.me;
-    load();
+    state.ready = true;
+    if (who.day && inflight === 0) {
+      state.day = who.day; state.date = who.day.date;
+      render();
+      saveCache();
+    } else if (!who.day) {
+      load();
+    }
   } catch (e) {
     app.innerHTML = '<div class="card"><p>開けませんでした</p><p style="font-size:13px">' + esc(e.message) + '</p></div>';
   }
 }
+
+// アプリに戻ってきたとき・開いている間は5分ごとに、最新の状態に更新する（相手のチェックを反映）
+async function refresh() {
+  if (!state.ready || !state.day || inflight > 0 || document.hidden) return;
+  try {
+    const j = await api('day', { date: state.day.date });
+    if (inflight === 0 && state.day && j.day.date === state.day.date) { state.day = j.day; render(); saveCache(); }
+  } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
+setInterval(refresh, 5 * 60 * 1000);
 
 main();
 </script>
