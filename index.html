@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>家事チェックリスト</title>
+<style>
+  :root {
+    --mami: #f9d5d3; --mami-ink: #a33a33;
+    --yuki: #cfe3f7; --yuki-ink: #1f5f9c;
+    --line: #dcdcdc; --soft: #f3f3f3; --ink: #222; --muted: #8a8a8a;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: #fff; color: var(--ink); }
+  body {
+    font-family: "BIZ UDPGothic", "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif;
+    font-size: 16px; line-height: 1.4;
+    padding-bottom: calc(24px + env(safe-area-inset-bottom));
+  }
+  .wrap { max-width: 520px; margin: 0 auto; padding: 0 16px; }
+
+  header { position: sticky; top: 0; z-index: 5; background: #fff; padding: 10px 0 8px; border-bottom: 2px solid #333; }
+  .daterow { display: flex; align-items: center; gap: 8px; }
+  .date { font-size: 24px; font-weight: bold; letter-spacing: .03em; flex: 1; text-align: center; }
+  .nav { width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 10px; background: #fff; font-size: 20px; color: #444; }
+  .nav[disabled] { opacity: .3; }
+  .pattern { text-align: center; font-size: 13px; margin-top: 4px; }
+  .pattern b { padding: 0 8px; border-radius: 6px; }
+  .pattern button { margin-left: 6px; font-size: 12px; border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 2px 8px; }
+  .totals { display: flex; gap: 8px; margin-top: 8px; }
+  .tot { flex: 1; border-radius: 10px; padding: 6px 10px; display: flex; align-items: baseline; justify-content: space-between; font-weight: bold; }
+  .tot span { font-size: 22px; }
+  .tot small { font-size: 12px; font-weight: normal; }
+  .progress { font-size: 12px; color: var(--muted); text-align: right; margin-top: 4px; }
+
+  .y { background: var(--yuki); color: var(--yuki-ink); }
+  .m { background: var(--mami); color: var(--mami-ink); }
+
+  h2 {
+    font-size: 15px; margin: 18px 0 0; padding: 6px 10px;
+    background: var(--soft); border-left: 5px solid #555;
+  }
+  .who { display: inline-block; margin: 8px 0 2px; padding: 1px 10px; border-radius: 6px; font-size: 13px; font-weight: bold; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li {
+    display: flex; align-items: center; gap: 12px;
+    min-height: 48px; padding: 6px 2px; border-bottom: 1px solid var(--line);
+    cursor: pointer; user-select: none;
+  }
+  .box {
+    flex: none; width: 24px; height: 24px; border: 2px solid #444; border-radius: 5px;
+    display: flex; align-items: center; justify-content: center; font-size: 16px; font-weight: bold;
+  }
+  .tx { flex: 1; min-width: 0; }
+  .tx small { display: block; font-size: 11px; color: var(--muted); }
+  .min { color: var(--muted); font-size: 13px; white-space: nowrap; }
+  li.key .tx { font-weight: bold; }
+  li.done .tx { color: var(--muted); text-decoration: line-through; }
+  li.done .box { border-color: transparent; }
+  .by { font-size: 11px; padding: 1px 6px; border-radius: 6px; white-space: nowrap; text-decoration: none; }
+  li.pending { opacity: .5; }
+
+  .card { margin: 40px 0; text-align: center; }
+  .card p { color: #555; }
+  .big { display: block; width: 100%; margin: 10px 0; padding: 14px; font-size: 18px; font-weight: bold; border: 0; border-radius: 12px; }
+  .big[disabled] { opacity: .35; }
+  #toast {
+    position: fixed; left: 50%; bottom: calc(20px + env(safe-area-inset-bottom)); transform: translateX(-50%);
+    background: #333; color: #fff; padding: 10px 16px; border-radius: 10px; font-size: 14px;
+    display: none; max-width: 90vw;
+  }
+</style>
+</head>
+<body>
+<div class="wrap" id="app"><div class="card"><p>読み込み中…</p></div></div>
+<div id="toast"></div>
+
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<script>
+// ===== 設定（セットアップ時に書き換える） =====
+const LIFF_ID = 'ここにLIFF_ID';
+const GAS_URL = 'ここにGASのウェブアプリURL';
+// ===========================================
+
+// 名前・区分・選択肢はログイン後にサーバーから受け取る（このファイルに個人情報を書かない）
+let NAMES = [], TIMINGS = [], PATTERN_OPTIONS = [], CLS = {};
+function applyConfig(c) {
+  NAMES = c.names; TIMINGS = c.timings; PATTERN_OPTIONS = c.patternOptions;
+  CLS = {}; NAMES.forEach((n, i) => { CLS[n] = i === 0 ? 'y' : 'm'; });
+}
+const DEMO = new URLSearchParams(location.search).has('demo');
+
+let state = { me: null, day: null, date: null, busy: false };
+const app = document.getElementById('app');
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => { t.style.display = 'none'; }, 3000);
+}
+
+async function api(action, params) {
+  if (DEMO) return window.demoApi(action, params || {});
+  const body = Object.assign({ action: action, idToken: liff.getIDToken() }, params || {});
+  const r = await fetch(GAS_URL, { method: 'POST', body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!j.ok) throw new Error(j.error || '通信エラー');
+  return j;
+}
+
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function addDays(date, n) {
+  const d = new Date(date + 'T12:00:00');
+  d.setDate(d.getDate() + n);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+}
+
+/* ---------- 画面 ---------- */
+
+function renderRegister(taken) {
+  app.innerHTML = '<div class="card"><h1 style="font-size:20px">はじめに</h1>'
+    + '<p>このLINEアカウントは、どちらの人ですか？<br>（最初の1回だけ）</p>'
+    + NAMES.map(n => '<button class="big ' + CLS[n] + '" data-name="' + n + '"' + (taken[n] ? ' disabled' : '') + '>'
+      + n + (taken[n] ? '（登録済み）' : '') + '</button>').join('') + '</div>';
+  app.querySelectorAll('[data-name]').forEach(b => b.onclick = async () => {
+    try {
+      const j = await api('register', { name: b.dataset.name });
+      applyConfig(j.config);
+      state.me = j.me;
+      load(state.date);
+    } catch (e) { toast(e.message); }
+  });
+}
+
+function renderPatternPicker(d) {
+  return '<div class="card"><p>' + esc(label(d)) + 'の分担パターンを選んでください</p>'
+    + PATTERN_OPTIONS.map(o => '<button class="big ' + CLS[o.bName] + '" data-pattern="' + esc(o.key) + '">寝かしつけ：'
+      + esc(o.bName) + '<br><small style="font-weight:normal">（' + esc(o.label) + 'と同じ）</small></button>').join('') + '</div>';
+}
+
+function label(d) {
+  const p = d.date.split('-');
+  return Number(p[1]) + '月' + Number(p[2]) + '日（' + d.weekday + '）';
+}
+
+function render() {
+  const d = state.day;
+  const other = d.bName ? NAMES.filter(n => n !== d.bName)[0] : null;
+  const done = d.tasks.filter(t => d.checks[t.id]).length;
+  let h = '<header><div class="daterow">'
+    + '<button class="nav" id="prev" aria-label="前の日">‹</button>'
+    + '<div class="date">' + esc(label(d)) + '</div>'
+    + '<button class="nav" id="next" aria-label="次の日"' + (d.date >= d.today ? ' disabled' : '') + '>›</button></div>';
+  if (d.pattern) {
+    h += '<div class="pattern">寝かしつけ <b class="' + CLS[d.bName] + '">' + d.bName + '</b>　夜の片付け'
+      + (d.gomi ? '・ゴミ' : '') + ' <b class="' + CLS[other] + '">' + other + '</b>'
+      + (d.patternChoosable ? '<button id="chg">変更</button>' : '') + '</div>';
+  }
+  h += '<div class="totals">'
+    + NAMES.map(n => '<div class="tot ' + CLS[n] + '">' + n + '<span>' + d.totals[n] + '<small>分</small></span></div>').join('')
+    + '</div><div class="progress">完了 ' + done + ' / ' + d.tasks.length + '（このスマホ：' + esc(state.me) + '）</div></header>';
+
+  if (!d.pattern) {
+    h += renderPatternPicker(d);
+  } else {
+    TIMINGS.forEach(tm => {
+      const inT = d.tasks.filter(t => t.timing === tm);
+      if (!inT.length) return;
+      h += '<h2>' + tm + '</h2>';
+      NAMES.forEach(n => {
+        const mine = inT.filter(t => t.assignee === n);
+        if (!mine.length) return;
+        h += '<div class="who ' + CLS[n] + '">' + n + '</div><ul>';
+        mine.forEach(t => {
+          const c = d.checks[t.id];
+          h += '<li data-id="' + t.id + '" class="' + (c ? 'done ' : '') + (t.key ? 'key' : '') + '">'
+            + '<span class="box ' + (c ? CLS[c.by] : '') + '">' + (c ? '✓' : '') + '</span>'
+            + '<span class="tx">' + esc(t.name) + (t.memo ? '<small>' + esc(t.memo) + '</small>' : '') + '</span>'
+            + (c ? '<span class="by ' + CLS[c.by] + '">' + esc(c.by) + (c.at ? ' ' + esc(c.at) : '') + '</span>' : '')
+            + '<span class="min">' + (t.min ? t.min + '分' : '—') + '</span></li>';
+        });
+        h += '</ul>';
+      });
+    });
+  }
+  app.innerHTML = h;
+
+  document.getElementById('prev').onclick = () => load(addDays(d.date, -1));
+  document.getElementById('next').onclick = () => load(addDays(d.date, 1));
+  const chg = document.getElementById('chg');
+  if (chg) chg.onclick = () => { state.day = Object.assign({}, d, { pattern: null }); render(); };
+  app.querySelectorAll('[data-pattern]').forEach(b => b.onclick = async () => {
+    try { const j = await api('setPattern', { date: d.date, pattern: b.dataset.pattern }); state.day = j.day; render(); }
+    catch (e) { toast(e.message); }
+  });
+  app.querySelectorAll('li[data-id]').forEach(li => li.onclick = () => toggle(li));
+}
+
+async function toggle(li) {
+  if (li.classList.contains('pending')) return;
+  li.classList.add('pending');
+  try {
+    const j = await api('toggle', { date: state.day.date, taskId: li.dataset.id });
+    state.day = j.day;
+    render();
+  } catch (e) {
+    li.classList.remove('pending');
+    toast(e.message);
+  }
+}
+
+async function load(date) {
+  try {
+    const j = await api('day', date ? { date: date } : {});
+    state.day = j.day; state.date = j.day.date; state.me = j.me;
+    render();
+    window.scrollTo(0, 0);
+  } catch (e) { toast(e.message); }
+}
+
+function loadScript(url) {
+  return new Promise((ok, ng) => {
+    const s = document.createElement('script');
+    s.src = url; s.onload = ok; s.onerror = () => ng(new Error('デモ用ファイルがありません'));
+    document.head.appendChild(s);
+  });
+}
+
+async function main() {
+  try {
+    if (!DEMO) {
+      await liff.init({ liffId: LIFF_ID });
+      if (!liff.isLoggedIn()) { liff.login(); return; }
+    }
+    if (DEMO) await loadScript('demo.js');
+    const who = await api('whoami');
+    applyConfig(who.config);
+    if (!who.me) { renderRegister(who.taken); return; }
+    state.me = who.me;
+    load();
+  } catch (e) {
+    app.innerHTML = '<div class="card"><p>開けませんでした</p><p style="font-size:13px">' + esc(e.message) + '</p></div>';
+  }
+}
+
+main();
+</script>
+</body>
+</html>
