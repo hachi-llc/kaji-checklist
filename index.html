@@ -200,16 +200,38 @@ function render() {
   app.querySelectorAll('li[data-id]').forEach(li => li.onclick = () => toggle(li));
 }
 
+// 送信中の件数。0 になったときだけサーバーの結果で画面を上書きする
+let inflight = 0;
+
+/** 画面上のチェック状態だけを先に切り替える（サーバーの返事を待たない） */
+function flipLocal(id) {
+  const d = state.day;
+  const t = d.tasks.filter(x => x.id === id)[0];
+  const c = d.checks[id];
+  if (c) {
+    d.totals[c.by] -= t.min;
+    delete d.checks[id];
+  } else {
+    const now = new Date();
+    d.checks[id] = { by: state.me, at: String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') };
+    d.totals[state.me] += t.min;
+  }
+}
+
 async function toggle(li) {
-  if (li.classList.contains('pending')) return;
-  li.classList.add('pending');
+  const id = li.dataset.id;
+  const date = state.day.date;
+  flipLocal(id);
+  render();
+  inflight++;
   try {
-    const j = await api('toggle', { date: state.day.date, taskId: li.dataset.id });
-    state.day = j.day;
-    render();
+    const j = await api('toggle', { date: date, taskId: id });
+    inflight--;
+    if (inflight === 0 && state.day.date === date) { state.day = j.day; render(); }
   } catch (e) {
-    li.classList.remove('pending');
-    toast(e.message);
+    inflight--;
+    if (state.day.date === date) { flipLocal(id); render(); }
+    toast('保存できませんでした：' + e.message);
   }
 }
 
