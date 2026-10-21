@@ -57,6 +57,7 @@
   li.key .tx { font-weight: bold; }
   li.done .tx { color: var(--muted); text-decoration: line-through; }
   li.done .box { border-color: transparent; }
+  .bys { display: flex; flex-direction: column; gap: 2px; align-items: flex-end; }
   .by { font-size: 11px; padding: 1px 6px; border-radius: 6px; white-space: nowrap; text-decoration: none; }
   li.pending { opacity: .5; }
 
@@ -152,7 +153,7 @@ function label(d) {
 function render() {
   const d = state.day;
   const other = d.bName ? NAMES.filter(n => n !== d.bName)[0] : null;
-  const done = d.tasks.filter(t => d.checks[t.id]).length;
+  const done = d.tasks.filter(t => (d.checks[t.id] || []).length).length;
   let h = '<header><div class="daterow">'
     + '<button class="nav" id="prev" aria-label="前の日">‹</button>'
     + '<div class="date">' + esc(label(d)) + '</div>'
@@ -178,11 +179,13 @@ function render() {
         if (!mine.length) return;
         h += '<div class="who ' + CLS[n] + '">' + n + '</div><ul>';
         mine.forEach(t => {
-          const c = d.checks[t.id];
-          h += '<li data-id="' + t.id + '" class="' + (c ? 'done ' : '') + (t.key ? 'key' : '') + '">'
-            + '<span class="box ' + (c ? CLS[c.by] : '') + '">' + (c ? '✓' : '') + '</span>'
+          const cs = d.checks[t.id] || [];
+          const byMe = cs.filter(c => c.by === state.me)[0];
+          const boxCls = cs.length ? CLS[(byMe || cs[0]).by] : '';
+          h += '<li data-id="' + t.id + '" class="' + (cs.length ? 'done ' : '') + (t.key ? 'key' : '') + '">'
+            + '<span class="box ' + boxCls + '">' + (cs.length ? '✓' : '') + '</span>'
             + '<span class="tx">' + esc(t.name) + (t.memo ? '<small>' + esc(t.memo) + '</small>' : '') + '</span>'
-            + (c ? '<span class="by ' + CLS[c.by] + '">' + esc(c.by) + (c.at ? ' ' + esc(c.at) : '') + '</span>' : '')
+            + '<span class="bys">' + cs.map(c => '<span class="by ' + CLS[c.by] + '">' + esc(c.by) + (c.at ? ' ' + esc(c.at) : '') + '</span>').join('') + '</span>'
             + '<span class="min">' + (t.min ? t.min + '分' : '—') + '</span></li>';
         });
         h += '</ul>';
@@ -208,16 +211,21 @@ let inflight = 0;
 /** 画面上のチェック状態だけを先に切り替える（サーバーの返事を待たない） */
 function flipLocal(id) {
   const d = state.day;
-  const t = d.tasks.filter(x => x.id === id)[0];
-  const c = d.checks[id];
-  if (c) {
-    d.totals[c.by] -= t.min;
-    delete d.checks[id];
+  const cs = d.checks[id] || [];
+  if (cs.some(c => c.by === state.me)) {
+    d.checks[id] = cs.filter(c => c.by !== state.me);
   } else {
     const now = new Date();
-    d.checks[id] = { by: state.me, at: String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') };
-    d.totals[state.me] += t.min;
+    d.checks[id] = cs.concat([{ by: state.me, at: String(now.getHours()).padStart(2, '0') + ':' + String(now.getMinutes()).padStart(2, '0') }]);
   }
+  if (!d.checks[id].length) delete d.checks[id];
+  // 合計を数え直す（2人でやったタスクは分を等分）
+  NAMES.forEach(n => { d.totals[n] = 0; });
+  d.tasks.forEach(t => {
+    const list = d.checks[t.id] || [];
+    list.forEach(c => { if (d.totals[c.by] !== undefined) d.totals[c.by] += t.min / list.length; });
+  });
+  NAMES.forEach(n => { d.totals[n] = Math.round(d.totals[n] * 10) / 10; });
 }
 
 async function toggle(li) {
@@ -298,7 +306,7 @@ async function main() {
   }
 }
 
-// アプリに戻ってきたとき・開いている間は5分ごとに、最新の状態に更新する（相手のチェックを反映）
+// アプリに戻ってきたとき・開いている間は30秒ごとに、最新の状態に更新する（相手のチェックを反映）
 async function refresh() {
   if (!state.ready || !state.day || inflight > 0 || document.hidden) return;
   try {
@@ -307,7 +315,7 @@ async function refresh() {
   } catch (e) {}
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refresh(); });
-setInterval(refresh, 5 * 60 * 1000);
+setInterval(refresh, 30 * 1000);
 
 main();
 </script>
